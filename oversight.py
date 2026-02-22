@@ -125,7 +125,7 @@ DEFAULT_PROFILE = {
     # Fine-tuned pi_H model configuration
     "model": {
         "enabled": False,
-        "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit",
+        "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
         "ollama_model_name": "oversight-pi-h",
         "ollama_host": "http://localhost:11434",
         "max_seq_length": 1024,
