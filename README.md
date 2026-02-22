@@ -1,171 +1,220 @@
-# The Oversight Game for Claude Code
+# OverClaude
 
-**A persistent oversight profile that learns how YOU work across all Claude Code sessions.**
+**A locally-trained language model that learns your oversight preferences for Claude Code.**
 
 Based on *"The Oversight Game: Learning to Cooperatively Balance an AI Agent's Safety and Autonomy"* (Overman & Bayati, 2025).
 
-## The Idea
+## What This Does
 
-Every time you start a new Claude Code session, it starts from scratch. It doesn't know that you're an expert in Python but less comfortable with Docker, that you always approve test runs but want to review git pushes, or that you trust your main project but want guardrails on new repos.
+Claude Code asks for permission before running tools — but it doesn't know *you*. It doesn't know you're a Python expert who never needs to approve `pytest`, or that you always want to review `git push`. Every session starts from zero.
 
-This tool maintains a **persistent oversight profile** that encodes two learned policies from the paper:
+OverClaude fixes this by training a **small local language model (pi_H)** on your actual approval patterns. The model runs via Ollama and makes real-time allow/deny/ask decisions on Claude Code's tool calls through the hooks system — no cloud calls, no latency worth noticing, fully private.
 
-| Paper | Claude Code Implementation |
-|-------|---------------------------|
-| **π_AI** (agent's play/ask policy) | Dynamic `CLAUDE.md` + `settings.json` permissions |
-| **π_H** (human's trust/oversee policy) | Hooks that log interactions + adaptive approval thresholds |
-| **Shared reward R_Φ** | Implicit: task completion, unnecessary asks, safety violations |
-| **Markov Potential Game structure** | Both policies co-evolve; more autonomy in safe regions doesn't hurt you |
+The system has two layers:
 
-The key insight from the paper's **Local Alignment Theorem**: when the AI shifts from *ask* to *play* in a domain where it benefits the AI (faster task completion), it cannot harm the human — provided the interaction has the right incentive structure. We approximate this by:
+1. **Heuristic policy** — a 4-level lookup table (`always_play` / `lean_play` / `ask_user` / `always_ask`) per action category. Fast, interpretable, acts as guard rails.
+2. **Learned model (pi_H)** — a LoRA fine-tuned Qwen2.5-1.5B served locally via Ollama. Handles the gray area between "obviously safe" and "obviously dangerous" with context-sensitive decisions.
 
-1. Only shifting toward *play* when the human consistently approves (positive reward signal)
-2. Immediately shifting toward *ask* when things go wrong (safety violation)
-3. Maintaining domain-specific expertise levels that gate autonomy
+The heuristic layer handles clear-cut cases (reading files is always fine, force-pushing always asks). The model only gets consulted for gray-area actions where context matters — like distinguishing `pip install requests` from `curl | sudo bash`.
 
 ## How It Works
 
 ```
-Session starts
-    │
-    ▼
-oversight generate
-    │  Reads ~/.claude/oversight/profile.json
-    │  Writes ~/.claude/CLAUDE.md          ← shapes π_AI (soft: instructions)
-    │  Writes ~/.claude/settings.json      ← shapes π_AI (hard: allow/deny)
-    │  Writes hook scripts                 ← observability for learning
-    │
-    ▼
-Claude Code runs with shaped policies
-    │  Hooks log every tool use to interaction_log.jsonl
-    │  CLAUDE.md tells Claude when to act vs. ask
-    │  settings.json enforces hard boundaries
-    │
-    ▼
-After session: oversight learn
-    │  Analyzes interaction log
-    │  Recommends policy updates
-    │  Updates profile
-    │  Regenerates CLAUDE.md
-    │
-    ▼
-Next session starts with updated policies
+                    Claude Code calls a tool
+                             │
+                             ▼
+                  PreToolUse hook fires
+                             │
+                             ▼
+                   Classify the action
+                 (21 categories via regex)
+                             │
+                ┌────────────┼────────────┐
+                ▼            ▼            ▼
+          always_play   lean_play/    always_ask
+          → allow       ask_user      → ask user
+          (no model)        │         (no model)
+                            ▼
+                   Query pi_H model
+                     (via Ollama)
+                            │
+                ┌───────────┼───────────┐
+                ▼           ▼           ▼
+             allow       ask_user      deny
+          (proceed)    (confirm)    (block)
 ```
+
+Everything is logged to `interaction_log.jsonl`. After a few sessions, you run `oversight train` and the model learns your patterns.
 
 ## Installation
 
 ```bash
-# Clone or copy to your preferred location
-cp -r oversight-game-cc ~/oversight-game-cc
+git clone https://github.com/wpoverman/OverClaude.git
+cd OverClaude
 
-# Make the CLI available (add to your .bashrc/.zshrc)
-alias oversight='python3 ~/oversight-game-cc/oversight.py'
+# Make the CLI available (add to .bashrc/.zshrc)
+alias oversight='python3 ~/OverClaude/oversight.py'
 
-# Initialize your profile (interactive mode asks about your expertise)
+# Initialize your profile
 oversight init --interactive
 
-# This generates:
-#   ~/.claude/CLAUDE.md           — instructions for Claude
-#   ~/.claude/settings.json       — permission rules
-#   ~/.claude/oversight/           — profile + logs + hooks
+# Generate CLAUDE.md, settings.json, and hook scripts
+oversight generate
+```
+
+### Requirements
+
+- Python 3.10+
+- [Ollama](https://ollama.com) — for serving the trained model
+- For training on Apple Silicon: `pip install mlx-lm`
+- For training on NVIDIA GPUs: `pip install unsloth trl datasets`
+
+No dependencies beyond Python stdlib for the core CLI and hooks.
+
+## Quick Start
+
+```bash
+# 1. Set up your profile and start using Claude Code
+oversight init --interactive
+oversight generate
+claude  # hooks are now active, logging everything
+
+# 2. After a few sessions, check what was learned
+oversight status
+oversight learn
+
+# 3. Train the local model on your patterns
+oversight train
+
+# 4. Now the model gates gray-area actions in real time
+oversight predict --tool Bash --command "pip install requests"
+oversight predict --tool Bash --command "rm -rf /tmp/build"
+```
+
+## Training the Model
+
+The training pipeline:
+
+1. **Data synthesis** (`prepare_training_data.py`, stdlib only) — converts interaction logs + feedback into labeled examples via a priority cascade:
+   - Explicit feedback (confidence 0.9): `too_cautious` → allow, `missed` → deny
+   - Revert detection (confidence 0.8): action that was undone → deny
+   - Outcome signal (confidence 0.5-0.7): exit code + stderr analysis
+   - Heuristic policy echo (confidence 0.4-0.6): cold-start bootstrap
+
+2. **LoRA fine-tuning** (`train_model.py`) — trains a Qwen2.5-1.5B-Instruct adapter on your data. On a MacBook Air M4 with 24GB RAM, training takes ~5 minutes and peaks at ~5GB memory.
+
+3. **Ollama import** — the fused model is imported as `oversight-pi-h` and served locally.
+
+```bash
+# Prepare training data only (no GPU needed)
+oversight train --data-only
+
+# Full pipeline: data → train → fuse → import to Ollama
+oversight train
+
+# Force training even with few examples
+oversight train --force
+```
+
+The model outputs structured JSON decisions:
+```json
+{"decision": "allow", "confidence": 0.85, "reasoning": "Standard package install in trusted Python project"}
 ```
 
 ## Usage
 
-### Day-to-day workflow
+### Day-to-day
 
 ```bash
-# Before starting work (or add to your shell startup):
-oversight generate
-
-# Start Claude Code normally — it reads the generated CLAUDE.md
-claude
-
-# After your session, analyze what happened:
-oversight learn
-
-# Quick feedback during/after a session:
-oversight feedback too_cautious shell_install   # "stop asking about pip install"
-oversight feedback missed shell_destructive     # "you should have asked before that rm"
-oversight feedback good_catch architecture_change  # "glad you asked about that"
-oversight feedback expertise rust               # "I know Rust well"
+oversight generate    # regenerate policies + hooks (run before sessions)
+oversight learn       # analyze logs, recommend policy shifts
+oversight status      # show profile, expertise, model status
 ```
 
-### Managing your profile
+### Feedback
 
 ```bash
-# Check your current profile
-oversight status
-
-# Set expertise levels (1-5 scale)
-oversight set-expertise python 5
-oversight set-expertise docker 2
-oversight set-expertise kubernetes 1
-
-# Set action policies directly
-oversight set-policy shell_install always_play      # stop asking about installs
-oversight set-policy file_delete always_ask          # always ask before deleting
-oversight set-policy shell_git_dangerous always_ask  # never auto-push
-
-# Set project trust levels (0.0-1.0)
-oversight trust ~/my-project 0.9      # I know this codebase
-oversight trust ~/new-client-repo 0.2  # be careful here
-
-# Clear logs for a fresh start
-oversight reset-log
+oversight feedback too_cautious shell_install    # "stop asking about pip install"
+oversight feedback missed shell_destructive      # "you should have asked before that rm"
+oversight feedback good_catch architecture_change # "glad you asked about that"
 ```
 
-### Policy Levels
+### Profile Tuning
 
-Each action category has one of four policy levels:
+```bash
+oversight set-expertise python 5          # I'm an expert (1-5 scale)
+oversight set-expertise kubernetes 1      # I'm a beginner
+oversight set-policy shell_install lean_play
+oversight set-policy shell_git_dangerous always_ask
+oversight trust ~/my-project 0.9          # high trust
+oversight trust ~/client-repo 0.3         # be cautious
+```
 
-| Level | Meaning | CLAUDE.md Instruction |
-|-------|---------|----------------------|
-| `always_play` | Always act autonomously | "Do this without asking" |
-| `lean_play` | Default autonomous, flag if unsure | "Generally proceed, mention what you did" |
-| `ask_user` | Ask before proceeding | "Describe your plan and wait for approval" |
-| `always_ask` | Never proceed without approval | "Always ask, no exceptions" |
+### Model Configuration
 
-### The Learning Loop
-
-The `oversight learn` command analyzes your interaction logs and recommends updates:
-
-- **Actions you always approve** → shift toward `play` (reduce interaction cost c_ask)
-- **Actions that caused errors** → shift toward `ask` (increase oversight for safety)
-- **Domains with low error rates** → increase expertise estimate
-- **Frequently used tools** → optimize permission settings
-
-This mirrors the paper's **independent policy gradient**: both π_AI and π_H update based on the shared reward signal, converging toward an equilibrium that balances safety and autonomy.
+```bash
+oversight set-model enabled true
+oversight set-model inference_timeout_ms 300
+oversight set-model fallback_on_timeout heuristic
+oversight predict --tool Bash --command "git push origin main"
+```
 
 ## Architecture
 
 ```
+oversight.py                  Core CLI (~1100 lines, stdlib only)
+prepare_training_data.py      Log → labeled training data (stdlib only)
+train_model.py                LoRA fine-tuning via MLX or unsloth
+
 ~/.claude/
-├── CLAUDE.md                    # Generated: soft π_AI policy
-├── settings.json                # Generated: hard π_AI constraints + hooks
+├── CLAUDE.md                 Generated soft policy (natural language)
+├── settings.json             Generated hard policy (allow/deny rules + hooks)
 └── oversight/
-    ├── profile.json             # Your learned profile (π_AI + π_H state)
-    ├── interaction_log.jsonl    # Raw interaction data (reward signals)
-    └── hooks/
-        └── log_action.py        # Hook script for PreToolUse/PostToolUse
+    ├── profile.json          Learned profile state + model config
+    ├── interaction_log.jsonl  Raw interaction events + gating decisions
+    ├── hooks/
+    │   └── log_action.py     Hook: classify → gate → log (baked-in profile)
+    └── training/
+        ├── training_data.jsonl   Labeled training examples
+        └── model_output/         LoRA adapter + fused model
 ```
 
-## Theoretical Connection
+### Policy Model
 
-The paper proves two key results that motivate this design:
+Four levels per action category: `always_play` → `lean_play` → `ask_user` → `always_ask`
 
-**Theorem 1 (Local Alignment):** Under the Markov Potential Game structure, any increase in the agent's autonomy that benefits the agent cannot decrease the human's value. In our implementation: when we shift a policy from `ask_user` to `lean_play` because you consistently approve those actions, the resulting time savings (less interruption) benefits you too.
+21 action categories (file_read, file_edit_small, file_edit_large, shell_safe, shell_destructive, shell_git_safe, shell_git_dangerous, etc.)
 
-**Theorem 2 (Safe Minimum-Oversight Equilibrium):** There exists a safe joint policy that minimizes oversight among all safe policies. Our `learn` command approximates this by finding the least-oversight policy that hasn't caused safety violations — reducing asking wherever your approval rate is high while maintaining oversight where errors have occurred.
+14 domain expertise dimensions (python, javascript, rust, ml_ai, devops, etc.)
 
-The **ask-burden assumption** maps directly to the interaction cost `c_ask`: deferral (asking) costs time and attention, so the agent prefers to play when safe. The **violation penalty** λ_viol maps to the consequence of errors — undo/revert operations that cost much more than a brief confirmation dialog.
+Per-project trust scores (0.0-1.0).
 
-## Limitations & Future Work
+### Data Flow
 
-- **No within-session adaptation of π_AI**: The CLAUDE.md is loaded at session start. Mid-session policy changes would require rewriting the file and using `/compact` or `/clear`.
-- **Prompt-based π_AI is approximate**: We can't do true gradient descent on Claude's policy — we're shaping it through natural language instructions, which is a noisy channel.
-- **The "human policy" is mostly implicit**: The tool currently focuses on shaping π_AI. A fuller implementation would also have configurable auto-approval rules (true π_H adaptation).
-- **Log analysis is basic**: A production version could use an LLM to analyze session transcripts for richer reward signals.
+```
+profile.json ──→ generate ──→ CLAUDE.md + settings.json + hooks
+                                                  │
+                          Claude Code session (hooks log + model gates)
+                                                  │
+                  learn ←── analyze logs ←─────────┘
+                    │
+                    ▼
+              update profile ──→ regenerate
+                    │
+                    ▼
+              train ──→ LoRA fine-tune ──→ Ollama import
+```
+
+## Theoretical Background
+
+This implements the two-player oversight game from the paper:
+
+- **π_AI** (agent policy): shaped via `CLAUDE.md` (soft) and `settings.json` (hard)
+- **π_H** (human policy): learned via the local model + heuristic fallback
+
+The paper's **Local Alignment Theorem** guarantees that shifting from *ask* to *play* in domains where the agent benefits cannot harm the human, given the right incentive structure. We approximate this by only relaxing oversight where approval rates are consistently high.
+
+The **Safe Minimum-Oversight Equilibrium** is approximated by the learning loop: reduce asking wherever approval rates are high, increase oversight wherever errors occur, converge on the least-oversight policy that maintains safety.
 
 ## License
 
