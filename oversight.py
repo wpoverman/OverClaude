@@ -1484,6 +1484,12 @@ def cmd_set_model(args):
     print(f"Updated model.{key}: {old} → {value}")
 
 
+def cmd_dashboard(args):
+    """Launch the web dashboard."""
+    from dashboard import run_dashboard
+    run_dashboard(port=args.port, open_browser=not args.no_browser)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="oversight",
@@ -1557,6 +1563,12 @@ def main():
     p.add_argument("key", help="Config key (e.g., enabled, ollama_host, inference_timeout_ms)")
     p.add_argument("value", help="Config value")
     p.set_defaults(func=cmd_set_model)
+
+    # dashboard
+    p = sub.add_parser("dashboard", help="Launch the web dashboard")
+    p.add_argument("--port", type=int, default=7483, help="Port (default: 7483)")
+    p.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")
+    p.set_defaults(func=cmd_dashboard)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

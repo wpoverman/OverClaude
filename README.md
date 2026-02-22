@@ -143,6 +143,19 @@ oversight trust ~/my-project 0.9          # high trust
 oversight trust ~/client-repo 0.3         # be cautious
 ```
 
+### Dashboard
+
+```bash
+oversight dashboard                # opens http://localhost:7483
+oversight dashboard --port 8080    # custom port
+oversight dashboard --no-browser   # don't auto-open browser
+```
+
+The dashboard provides a localhost web UI with three tabs:
+- **Overview** — stat cards (total actions, automated %, model decisions), activity timeline, policy distribution
+- **Review Queue** — filterable table of automated actions with retroactive feedback buttons ("Fine", "Should have asked", "Dangerous") that shift policies
+- **Profile** — live sliders for domain expertise, dropdowns for action policies, trust scores, and a "Regenerate" button
+
 ### Model Configuration
 
 ```bash
@@ -156,6 +169,7 @@ oversight predict --tool Bash --command "git push origin main"
 
 ```
 oversight.py                  Core CLI (~1100 lines, stdlib only)
+dashboard.py                  Localhost web dashboard (stdlib only)
 prepare_training_data.py      Log → labeled training data (stdlib only)
 train_model.py                LoRA fine-tuning via MLX or unsloth
 
