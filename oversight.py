@@ -138,6 +138,7 @@ DEFAULT_PROFILE = {
         "inference_timeout_ms": 500,
         "fallback_on_timeout": "heuristic",
         "fallback_on_error": "allow",
+        "verbose_hooks": False,
         "last_trained": None,
         "training_examples_count": 0,
         "version": 0,
@@ -651,6 +652,18 @@ ACTION_POLICIES = ''' + action_policies + '''
 DOMAIN_EXPERTISE = ''' + domain_expertise + '''
 PROJECT_TRUST = ''' + project_trust + '''
 MODEL_CONFIG = ''' + model_config + '''
+VERBOSE_HOOKS = ''' + repr(profile.get("model", {}).get("verbose_hooks", False)) + '''
+
+SKIP_VERBOSE_CATEGORIES = {"file_read", "shell_safe", "generate_boilerplate"}
+
+def notify(msg, color="green"):
+    """Write a colored notification to stderr when verbose hooks are enabled."""
+    if not VERBOSE_HOOKS:
+        return
+    colors = {"green": "\\033[32m", "yellow": "\\033[33m", "red": "\\033[31m"}
+    code = colors.get(color, "")
+    reset = "\\033[0m"
+    print(f"{code}{msg}{reset}", file=sys.stderr)
 
 # ─── action classification (mirrored from prepare_training_data.py) ───────
 BASH_PATTERNS = [
@@ -842,6 +855,8 @@ def main():
             entry["gating_decision"] = "ask"
             entry["gating_source"] = "policy"
             entry["gating_confidence"] = 1.0
+            if action_category not in SKIP_VERBOSE_CATEGORIES:
+                notify(f"oversight: asking about {action_category} (policy)", "yellow")
         elif MODEL_CONFIG.get("enabled", False):
             # Gray area — query model
             model_result = query_model(entry, action_category)
@@ -853,10 +868,17 @@ def main():
             if model_result["decision"] == "deny":
                 gating_output = {"permissionDecision": "deny",
                                  "message": f"Model denied: {model_result['reasoning']}"}
+                if action_category not in SKIP_VERBOSE_CATEGORIES:
+                    notify(f"oversight: denied {action_category} (model, {model_result['confidence']:.2f})", "red")
             elif model_result["decision"] == "ask_user":
                 gating_output = {"permissionDecision": "ask",
                                  "message": f"Model suggests confirmation: {model_result['reasoning']}"}
-            # "allow" → no output, action proceeds
+                if action_category not in SKIP_VERBOSE_CATEGORIES:
+                    notify(f"oversight: asking about {action_category} (model, {model_result['confidence']:.2f})", "yellow")
+            else:
+                # "allow" → no output, action proceeds
+                if action_category not in SKIP_VERBOSE_CATEGORIES:
+                    notify(f"oversight: auto-allowed {action_category} (model, {model_result['confidence']:.2f})", "green")
         else:
             # Model disabled — heuristic fallback for gray area
             if policy == "ask_user":
@@ -865,7 +887,12 @@ def main():
                 entry["gating_decision"] = "ask"
                 entry["gating_source"] = "heuristic"
                 entry["gating_confidence"] = 0.5
-            # lean_play with model disabled → allow (no output)
+                if action_category not in SKIP_VERBOSE_CATEGORIES:
+                    notify(f"oversight: asking about {action_category} (heuristic)", "yellow")
+            else:
+                # lean_play with model disabled → allow (no output)
+                if action_category not in SKIP_VERBOSE_CATEGORIES:
+                    notify(f"oversight: auto-allowed {action_category} (lean_play)", "green")
 
     # Log the event
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1457,7 +1484,7 @@ def cmd_set_model(args):
     value = args.value
 
     # Validate known keys with type checking
-    bool_keys = {"enabled"}
+    bool_keys = {"enabled", "verbose_hooks"}
     int_keys = {"max_seq_length", "lora_r", "lora_alpha", "training_epochs",
                 "training_batch_size", "min_training_examples", "inference_timeout_ms",
                 "version", "training_examples_count"}
