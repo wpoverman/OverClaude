@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.egg-info/
+fused_model/
+homebrew/
+*.gguf
