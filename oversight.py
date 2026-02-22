@@ -621,11 +621,12 @@ def generate_hook_scripts(profile: dict):
     hooks_dir = OVERSIGHT_DIR / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    # Bake profile data into the hook script as constants
-    action_policies = json.dumps(profile.get("action_policies", {}))
-    domain_expertise = json.dumps(profile.get("domain_expertise", {}))
-    project_trust = json.dumps(profile.get("project_trust", {}))
-    model_config = json.dumps(profile.get("model", {}))
+    # Bake profile data into the hook script as Python literals
+    # Use repr() not json.dumps() — JSON false/null/true aren't valid Python
+    action_policies = repr(profile.get("action_policies", {}))
+    domain_expertise = repr(profile.get("domain_expertise", {}))
+    project_trust = repr(profile.get("project_trust", {}))
+    model_config = repr(profile.get("model", {}))
 
     log_script = hooks_dir / "log_action.py"
     log_script.write_text('''#!/usr/bin/env python3
