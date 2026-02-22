@@ -1,0 +1,6 @@
+# Optional dependencies for pi_H model training only.
+# Core oversight.py and data preparation require no external deps.
+# Install with: pip install -r requirements-train.txt
+unsloth
+trl
+datasets
