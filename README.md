@@ -8,14 +8,7 @@ Based on *"The Oversight Game: Learning to Cooperatively Balance an AI Agent's S
 
 Claude Code asks for permission before running tools — but it doesn't know *you*. It doesn't know you're a Python expert who never needs to approve `pytest`, or that you always want to review `git push`. Every session starts from zero.
 
-OverClaude fixes this by training a **small local language model (pi_H)** on your actual approval patterns. The model runs via Ollama and makes real-time allow/deny/ask decisions on Claude Code's tool calls through the hooks system — no cloud calls, no latency worth noticing, fully private.
-
-The system has two layers:
-
-1. **Heuristic policy** — a 4-level lookup table (`always_play` / `lean_play` / `ask_user` / `always_ask`) per action category. Fast, interpretable, acts as guard rails.
-2. **Learned model (pi_H)** — a LoRA fine-tuned Qwen2.5-1.5B served locally via Ollama. Handles the gray area between "obviously safe" and "obviously dangerous" with context-sensitive decisions.
-
-The heuristic layer handles clear-cut cases (reading files is always fine, force-pushing always asks). The model only gets consulted for gray-area actions where context matters — like distinguishing `pip install requests` from `curl | sudo bash`.
+OverClaude fixes this by training a **small local language model (pi_H)** on your actual approval patterns. The model runs via Ollama and makes real-time allow/deny/ask decisions on Claude Code's tool calls through the hooks system — no cloud calls, no latency worth noticing, fully private. Simple heuristic guard rails handle the obvious extremes (reading files is always fine, force-pushing always asks), and the model handles everything in between — like distinguishing `pip install requests` from `curl | sudo bash`.
 
 ## How It Works
 
@@ -178,16 +171,6 @@ train_model.py                LoRA fine-tuning via MLX or unsloth
         ├── training_data.jsonl   Labeled training examples
         └── model_output/         LoRA adapter + fused model
 ```
-
-### Policy Model
-
-Four levels per action category: `always_play` → `lean_play` → `ask_user` → `always_ask`
-
-21 action categories (file_read, file_edit_small, file_edit_large, shell_safe, shell_destructive, shell_git_safe, shell_git_dangerous, etc.)
-
-14 domain expertise dimensions (python, javascript, rust, ml_ai, devops, etc.)
-
-Per-project trust scores (0.0-1.0).
 
 ### Data Flow
 
